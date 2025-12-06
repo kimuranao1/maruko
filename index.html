@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>まるこふ氏＝まぜまぜ文章生成＝</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body { font-family: ui-sans-serif, sans-serif; margin:0; padding:20px; background:#fafafa; text-align:center; }
+.container { max-width:800px; margin:auto; text-align:left; }
+textarea { width:100%; height:200px; }
+button { padding:10px 20px; margin:10px 0; font-size:16px; }
+.output { white-space: pre-wrap; background:#fff; padding:10px; border:1px solid #ddd; }
+input, select { width:100%; padding:8px; margin:6px 0; }
+img#fixed_img { max-width:100%; border-radius:10px; margin-bottom:20px; display:block; margin-left:auto; margin-right:auto; }
+hr { margin:30px 0; }
+.progress { margin:10px 0; font-weight:bold; color: #444; }
+</style>
+</head>
+
+<body>
+<div class="container">
+
+<h2>まるこふ氏＝まぜまぜ文章生成＝</h2>
+
+<img id="fixed_img" src="marcov-chan.png" alt="まるこふちゃんはかわいい女の子♪">
+
+<label>学習データファイル（複数可 / TXT or JSON）</label>
+<input type="file" id="file_input" multiple accept=".txt,.json">
+
+<label>テーマ（Theme）</label>
+<input id="theme" value="誰かに宛てたはずなのに、差出人も受取人も不明な手紙が机に置かれている。読む人は誰なのか。">
+
+<label>文字数</label>
+<input id="gen_len" type="number" value="800">
+
+<label>言語</label>
+<select id="lang">
+  <option value="jp">日本語</option>
+  <option value="en">English</option>
+</select>
+
+<button id="run">生成する</button>
+<div class="progress" id="progress"></div>
+
+<h3>生成結果</h3>
+<div id="result" class="output"></div>
+
+<hr>
+
+<h2>完全一致チェッカー（自動チェック）</h2>
+<h3>一致結果</h3>
+<div id="match_result" class="output"></div>
+
+</div>
+
+<script>
+// ===== 複数ファイル読み込み（TXT / JSON 両対応） =====
+async function readFiles(files){
+    let combined = "";
+    for (let f of files){
+        const text = await f.text();
+        const ext = f.name.split('.').pop().toLowerCase();
+        if(ext === "txt") combined += text + "\n";
+        else if(ext === "json"){
+            try {
+                const json = JSON.parse(text);
+                if(Array.isArray(json)){
+                    if(typeof json[0]==="string") combined += json.join('');
+                    else combined += json.map(o=>o.text||'').join('');
+                }
+            } catch(e){ console.warn(f.name+" JSON parse error"); }
+        }
+    }
+    return combined;
+}
+
+// ===== themechoice（忠実型） =====
+function themechoice(theme, tokenslist){
+    let weight_taken = [];
+    for(let u of theme){
+        let count = 0;
+        for(let i of tokenslist){
+            if(i.some(tok => tok.includes(u))) count++;
+            if(count>0) weight_taken.push([i,count]);
+        }
+    }
+    return weight_taken;
+}
+
+// ===== Markov生成（テーマ優先＋進捗表示） =====
+async function generateMarkov(theme, train_text, gen_len, lang, progress_cb){
+    let text = lang==="en"?train_text.replace(/\r?\n/g," "):train_text;
+    let tokens = lang==="jp"?Array.from(text):text.split(/\s+/);
+    let N=2, risuto=[], risuto2=[];
+
+    for(let i=0;i<tokens.length-N;i++) risuto.push([tokens[i],tokens[i+1],tokens[i+N]]);
+    for(let i=0;i<risuto.length-64;i++) risuto2.push([risuto[i],risuto[i+1],risuto[i+2],risuto[i+64]]);
+
+    let u = themechoice(theme, risuto2);
+
+    let d = risuto2[Math.floor(Math.random()*risuto2.length)];
+    let result=[];
+
+    for(let a_count=0; a_count<gen_len; a_count++){
+        let kouho=[], kouhok=[];
+
+        for(let i of risuto2){
+            if(JSON.stringify(d[1])===JSON.stringify(i[0]) &&
+               JSON.stringify(d[2].slice(0,1))===JSON.stringify(i[1].slice(0,1))){
+                kouho.push(i);
+            }
+        }
+
+        for(let y of u){
+            if(kouho.includes(y[0])) kouhok.push(y[0]);
+        }
+
+        if(kouhok.length>0) d = kouhok[Math.floor(Math.random()*kouhok.length)];
+        else if(kouho.length>0) d = kouho[Math.floor(Math.random()*kouho.length)];
+        else d = risuto2[Math.floor(Math.random()*risuto2.length)];
+
+        if(d && d[0] && d[0][0]!==undefined) result.push(d[0][0]);
+
+        // 進捗表示
+        if(progress_cb && (a_count+1)%50===0){
+            progress_cb(a_count+1, gen_len);
+            await new Promise(r=>setTimeout(r,0)); // ブラウザ描画確保
+        }
+    }
+    return lang==="en"?result.join(" "):result.join("");
+}
+
+// ===== 高速完全一致チェッカー =====
+function findMatchesFast(A,B,minLen=10){
+    let matches=[], substrSet=new Set();
+    for(let i=0;i<=B.length-minLen;i++) substrSet.add(B.substring(i,i+minLen));
+    for(let i=0;i<=A.length-minLen;i++){
+        let sub = A.substring(i,i+minLen);
+        if(substrSet.has(sub)) matches.push(sub);
+    }
+    return matches;
+}
+
+// ===== UIイベント =====
+document.getElementById("run").onclick = async ()=>{
+    const files = document.getElementById("file_input").files;
+    if(!files.length){ alert("ファイルを選択してください"); return; }
+    const theme = document.getElementById("theme").value;
+    const gen_len = parseInt(document.getElementById("gen_len").value);
+    const lang = document.getElementById("lang").value;
+
+    document.getElementById("progress").innerText = "生成中…";
+
+    const train_text = await readFiles(files);
+
+    const out = await generateMarkov(theme, train_text, gen_len, lang, (done,total)=>{
+        document.getElementById("progress").innerText = `生成中… ${done}/${total}文字`;
+    });
+
+    document.getElementById("progress").innerText = "生成完了！";
+    document.getElementById("result").innerText = out;
+
+    const matches = findMatchesFast(out, train_text, 10);
+    document.getElementById("match_result").innerText =
+        matches.length===0?"一致なし":matches.join("\n---\n");
+};
+</script>
+</body>
+</html>
