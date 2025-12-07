@@ -1,169 +1,394 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-<meta charset="UTF-8">
-<title>まるこふ氏＝まぜまぜ文章生成＝</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>まるこふ氏＝まぜまぜ文章生成＝（JS: Python忠実再現・B）</title>
 <style>
-body { font-family: ui-sans-serif, sans-serif; margin:0; padding:20px; background:#fafafa; text-align:center; }
-.container { max-width:800px; margin:auto; text-align:left; }
-textarea { width:100%; height:200px; }
-button { padding:10px 20px; margin:10px 0; font-size:16px; }
-.output { white-space: pre-wrap; background:#fff; padding:10px; border:1px solid #ddd; }
-input, select { width:100%; padding:8px; margin:6px 0; }
-img#fixed_img { max-width:100%; border-radius:10px; margin-bottom:20px; display:block; margin-left:auto; margin-right:auto; }
-hr { margin:30px 0; }
-.progress { margin:10px 0; font-weight:bold; color: #444; }
+body { font-family: ui-sans-serif, system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "メイリオ", sans-serif; margin:0; padding:20px; background:#fafafa; color:#111; }
+.container { max-width:900px; margin:0 auto; }
+h2 { text-align:center }
+label { font-weight:600; display:block; margin-top:12px; }
+input[type="file"] { display:block; margin-top:6px; }
+input, select, textarea { width:100%; padding:8px; margin-top:6px; box-sizing:border-box; }
+button { padding:10px 16px; margin-top:12px; }
+.output { white-space: pre-wrap; background:#fff; padding:12px; border:1px solid #ddd; min-height:120px; margin-top:10px; }
+.progress { margin-top:12px; font-weight:700; color:#444; }
+.controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px; }
+.small { width:140px; }
+footer { margin-top:20px; font-size:13px; color:#666; }
 </style>
 </head>
-
 <body>
 <div class="container">
+  <h2>まるこふ氏＝まぜまぜ文章生成＝（JS：Pythonロジック忠実再現・B）</h2>
 
-<h2>まるこふ氏＝まぜまぜ文章生成＝</h2>
+  <label>学習データファイル（複数可 / TXT または JSON。フォルダ選択可）</label>
+  <input id="file_input" type="file" multiple webkitdirectory directory accept=".txt,.json" />
 
-<img id="fixed_img" src="marcov-chan.png" alt="まるこふちゃんはかわいい女の子♪">
+  <div class="controls">
+    <div style="flex:1;">
+      <label>言語</label>
+      <select id="lang_mode">
+        <option value="ja">日本語（1文字ずつ）</option>
+        <option value="en">English（単語単位）</option>
+      </select>
+    </div>
 
-<label>学習データファイル（複数可 / TXT or JSON）</label>
-<input type="file" id="file_input" multiple accept=".txt,.json">
+    <div style="width:160px;">
+      <label>文字数 / 単語数</label>
+      <input id="gen_len" type="number" value="800" class="small" />
+    </div>
+  </div>
 
-<label>テーマ（Theme）</label>
-<input id="theme" value="誰かに宛てたはずなのに、差出人も受取人も不明な手紙が机に置かれている。読む人は誰なのか。">
+  <label>テーマ（Theme） — 入力した文字列は **1文字ずつ** 分解して扱います</label>
+  <input id="theme" value="誰も覚えていないはずの約束が、ある日ふと蘇る。その瞬間に生まれる揺らぎ。" />
 
-<label>文字数</label>
-<input id="gen_len" type="number" value="800">
+  <div class="controls">
+    <button id="run">生成する</button>
+    <button id="stop">停止</button>
+  </div>
 
-<label>言語</label>
-<select id="lang">
-  <option value="jp">日本語</option>
-  <option value="en">English</option>
-</select>
+  <div id="progress" class="progress">準備中…</div>
 
-<button id="run">生成する</button>
-<div class="progress" id="progress"></div>
+  <h3>生成結果（逐次出力）</h3>
+  <div id="result" class="output"></div>
 
-<h3>生成結果</h3>
-<div id="result" class="output"></div>
-
-<hr>
-
-<h2>完全一致チェッカー（自動チェック）</h2>
-<h3>一致結果</h3>
-<div id="match_result" class="output"></div>
-
+  <footer>注：大きな JSON はチャンク読み込み／サンプリングで負荷低減します。生成ロジックは元 Python を忠実再現しています。</footer>
 </div>
 
 <script>
-// ===== 複数ファイル読み込み（TXT / JSON 両対応） =====
-async function readFiles(files){
-    let combined = "";
-    for (let f of files){
-        const text = await f.text();
-        const ext = f.name.split('.').pop().toLowerCase();
-        if(ext === "txt") combined += text + "\n";
-        else if(ext === "json"){
-            try {
-                const json = JSON.parse(text);
-                if(Array.isArray(json)){
-                    if(typeof json[0]==="string") combined += json.join('');
-                    else combined += json.map(o=>o.text||'').join('');
-                }
-            } catch(e){ console.warn(f.name+" JSON parse error"); }
-        }
+/* ---------- ユーティリティ ---------- */
+function isString(v){ return typeof v === 'string' || v instanceof String; }
+function deepEqual(a,b){
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b) && a.length === b.length){
+    for(let i=0;i<a.length;i++){
+      if(!deepEqual(a[i], b[i])) return false;
     }
-    return combined;
+    return true;
+  }
+  return false;
 }
 
-// ===== themechoice（忠実型） =====
-function themechoice(theme, tokenslist){
-    let weight_taken = [];
-    for(let u of theme){
-        let count = 0;
-        for(let i of tokenslist){
-            if(i.some(tok => tok.includes(u))) count++;
-            if(count>0) weight_taken.push([i,count]);
+/* ---------- ファイル読み込み：部分チャンク＋サンプリング ---------- */
+/*
+ options:
+  - maxItemsPerFile: 最大要素数（JSON配列なら要素数、TXTなら行数換算）
+  - sampleRatio: 各ファイルからのランダムサンプリング確率（0..1）
+  - lang: 'ja'|'en'
+*/
+async function readFilesToText(files, options){
+  const { maxItemsPerFile=20000, sampleRatio=0.25, lang='ja' } = options || {};
+  const chunks = [];
+  for (let f of files){
+    const name = f.name || 'unknown';
+    const ext = name.split('.').pop().toLowerCase();
+    try {
+      const txt = await f.text();
+      if (ext === 'txt'){
+        let lines = txt.split(/\r?\n/);
+        if (lines.length > maxItemsPerFile){
+          // contiguous chunk sampling to preserve sequence
+          const start = Math.floor(Math.random() * (lines.length - maxItemsPerFile + 1));
+          lines = lines.slice(start, start + maxItemsPerFile);
+        } else if (sampleRatio < 1){
+          lines = lines.filter(()=> Math.random() < sampleRatio);
         }
-    }
-    return weight_taken;
-}
-
-// ===== Markov生成（テーマ優先＋進捗表示） =====
-async function generateMarkov(theme, train_text, gen_len, lang, progress_cb){
-    let text = lang==="en"?train_text.replace(/\r?\n/g," "):train_text;
-    let tokens = lang==="jp"?Array.from(text):text.split(/\s+/);
-    let N=2, risuto=[], risuto2=[];
-
-    for(let i=0;i<tokens.length-N;i++) risuto.push([tokens[i],tokens[i+1],tokens[i+N]]);
-    for(let i=0;i<risuto.length-64;i++) risuto2.push([risuto[i],risuto[i+1],risuto[i+2],risuto[i+64]]);
-
-    let u = themechoice(theme, risuto2);
-
-    let d = risuto2[Math.floor(Math.random()*risuto2.length)];
-    let result=[];
-
-    for(let a_count=0; a_count<gen_len; a_count++){
-        let kouho=[], kouhok=[];
-
-        for(let i of risuto2){
-            if(JSON.stringify(d[1])===JSON.stringify(i[0]) &&
-               JSON.stringify(d[2].slice(0,1))===JSON.stringify(i[1].slice(0,1))){
-                kouho.push(i);
+        chunks.push(lines.join('\n'));
+      } else if (ext === 'json'){
+        try {
+          const data = JSON.parse(txt);
+          if (Array.isArray(data)){
+            let arr = data;
+            if (arr.length > maxItemsPerFile){
+              const start = Math.floor(Math.random() * (arr.length - maxItemsPerFile + 1));
+              arr = arr.slice(start, start + maxItemsPerFile);
+            } else if (sampleRatio < 1){
+              arr = arr.filter(()=> Math.random() < sampleRatio);
             }
+            if (arr.length === 0) continue;
+            if (arr.every(x => isString(x))){
+              chunks.push(arr.join(' '));
+            } else {
+              chunks.push(arr.map(o => (o && (o.text||o.body||o.content)) || '').join(' '));
+            }
+          } else if (typeof data === 'object'){
+            // try to extract text-like fields
+            const fields = ['text','body','content','full_text'];
+            let found = null;
+            for (let k of fields) if (data[k]) { found = data[k]; break; }
+            if (found) chunks.push(String(found));
+            else chunks.push(JSON.stringify(data));
+          } else {
+            chunks.push(String(data));
+          }
+        } catch(e){
+          console.warn('JSON parse error for', name, e);
+          // fallback: push raw
+          chunks.push(txt.slice(0, 100000));
         }
-
-        for(let y of u){
-            if(kouho.includes(y[0])) kouhok.push(y[0]);
-        }
-
-        if(kouhok.length>0) d = kouhok[Math.floor(Math.random()*kouhok.length)];
-        else if(kouho.length>0) d = kouho[Math.floor(Math.random()*kouho.length)];
-        else d = risuto2[Math.floor(Math.random()*risuto2.length)];
-
-        if(d && d[0] && d[0][0]!==undefined) result.push(d[0][0]);
-
-        // 進捗表示
-        if(progress_cb && (a_count+1)%50===0){
-            progress_cb(a_count+1, gen_len);
-            await new Promise(r=>setTimeout(r,0)); // ブラウザ描画確保
-        }
+      } else {
+        // other extension: push raw head
+        chunks.push(txt.slice(0, 100000));
+      }
+    } catch(e){
+      console.warn('file read error', f.name, e);
     }
-    return lang==="en"?result.join(" "):result.join("");
+  }
+  return chunks.join('\n');
 }
 
-// ===== 高速完全一致チェッカー =====
-function findMatchesFast(A,B,minLen=10){
-    let matches=[], substrSet=new Set();
-    for(let i=0;i<=B.length-minLen;i++) substrSet.add(B.substring(i,i+minLen));
-    for(let i=0;i<=A.length-minLen;i++){
-        let sub = A.substring(i,i+minLen);
-        if(substrSet.has(sub)) matches.push(sub);
+/* ---------- Python と同様の themechoice（忠実再現） ----------
+  Python原文:
+    for u in word:
+      count = 0
+      for w in u:
+        for i in tokenslist:
+          for k in i:
+            if u in k:
+              count = count + 1
+          if count > 0:
+            g = [i,count]
+            weight_taken.append(g)
+  Notes:
+    - 'word' は文字列（テーマ）→ for u in word => 各文字を扱う
+    - tokenslist は risuto2（各要素は配列 [risuto[i], risuto[i+1], risuto[i+2], risuto[i+64]]）
+    - 実装は原文のネストと cumulated count を再現します
+*/
+function themechoice_pyfaithful(themeStr, tokenslist){
+  const weight_taken = [];
+  // iterate codeunits (characters): Python's 'for u in word' iterates characters
+  for (let ui=0; ui < themeStr.length; ui++){
+    const u = themeStr[ui];
+    let count = 0;
+    for (let idx = 0; idx < tokenslist.length; idx++){
+      const group = tokenslist[idx]; // group is like [risuto[i], risuto[i+1], risuto[i+2], risuto[i+64]]
+      // iterate k over group
+      for (let kIndex = 0; kIndex < group.length; kIndex++){
+        const k = group[kIndex];
+        if (isString(k)){
+          if (k.includes(u)) count++;
+        } else if (Array.isArray(k)){
+          // element is array (risuto element) -> check membership and substring
+          if (k.includes(u)) count++;
+          else {
+            for (let el of k){
+              if (isString(el) && el.includes(u)){ count++; break; }
+            }
+          }
+        } else {
+          // fallback stringify
+          try { if (String(k).includes(u)) count++; } catch(e){}
+        }
+      }
+      if (count > 0){
+        weight_taken.push([group, count]);
+      }
     }
-    return matches;
+  }
+  console.log("weighttoken数：" + weight_taken.length);
+  return weight_taken;
 }
 
-// ===== UIイベント =====
-document.getElementById("run").onclick = async ()=>{
-    const files = document.getElementById("file_input").files;
-    if(!files.length){ alert("ファイルを選択してください"); return; }
-    const theme = document.getElementById("theme").value;
-    const gen_len = parseInt(document.getElementById("gen_len").value);
-    const lang = document.getElementById("lang").value;
+/* ---------- risuto2 ビルド（Python の挙動通り） ----------
+ tokens: array of tokens (chars for JP or words for EN)
+ N: 2 (typical)
+ safe cap:  maxRisutoLen 指定で tokens が巨大なら連続チャンク採取
+*/
+function buildRisuto2(tokens, N=2, maxRisutoLen=200000){
+  // cap tokens by taking contiguous chunk if enormous (keeps sequence)
+  if (tokens.length > maxRisutoLen + N){
+    const start = Math.floor(Math.random() * (tokens.length - (maxRisutoLen + N) + 1));
+    tokens = tokens.slice(start, start + maxRisutoLen + N);
+  }
+  const risuto = [];
+  for (let i=0;i < tokens.length - N; i++){
+    risuto.push([tokens[i], tokens[i+1], tokens[i+N]]);
+  }
+  const risuto2 = [];
+  // Python: for i in range(0, len(risuto)-64)
+  for (let i=0;i < Math.max(0, risuto.length - 64); i++){
+    risuto2.push([ risuto[i], risuto[i+1], risuto[i+2], risuto[i+64] ]);
+  }
+  return risuto2;
+}
 
-    document.getElementById("progress").innerText = "生成中…";
+/* ---------- 生成ロジック（Python を忠実再現） ----------
+ Steps:
+  - u = themechoice_pyfaithful(theme, risuto2)
+  - initial d: if u non-empty -> pick random u element's [0] (i.e. the group), else pick random risuto2 element
+  - loop genLen times:
+      * build kouho by scanning risuto2 and checking deep equality (d[1] == i[0]) and tes/tes2 equality as in Python
+      * build kouhok: collect y[0] for y in u if y[0] ∈ kouho (deep equality)
+      * pick next d:
+          - if kouhok non-empty -> random from kouhok
+          - else if kouho non-empty -> random from kouho
+          - else random risuto2
+      * output token: d[0][0] (same as Python)
+  - incremental UI append for "リアルタイム出力"
+*/
+let STOP_REQUESTED = false;
 
-    const train_text = await readFiles(files);
+async function generateFaithfulJS(themeStr, risuto2, genLen=800, lang='ja', onProgress){
+  if (!Array.isArray(risuto2) || risuto2.length === 0){
+    throw new Error('risuto2 が空です');
+  }
+  STOP_REQUESTED = false;
 
-    const out = await generateMarkov(theme, train_text, gen_len, lang, (done,total)=>{
-        document.getElementById("progress").innerText = `生成中… ${done}/${total}文字`;
+  const u = themechoice_pyfaithful(themeStr, risuto2); // array of [group, count]
+
+  // pick initial d:
+  let d;
+  if (u && u.length > 0){
+    // pick random u element, then use its [0] which is 'group' (risuto element)
+    const pick = u[Math.floor(Math.random() * u.length)];
+    d = pick[0];
+  } else {
+    d = risuto2[Math.floor(Math.random() * risuto2.length)];
+  }
+
+  const resultParts = [];
+  const total = Math.max(1, genLen|0);
+
+  // helper to check group membership in kouho
+  function groupInKouho(group, kouho){
+    for (let item of kouho){
+      if (deepEqual(item, group)) return true;
+    }
+    return false;
+  }
+
+  for (let a=0; a< total; a++){
+    if (STOP_REQUESTED) break;
+
+    // build kouho
+    const kouho = [];
+    for (let i=0; i<risuto2.length; i++){
+      const item = risuto2[i];
+      try {
+        if (deepEqual(d[1], item[0])){ // d[1] == i[0]
+          // tes = d[2:3] (slice one element) -> represented as array
+          const tes = (Array.isArray(d[2]) ? [d[2][0]] : [d[2]]);
+          const tes2 = (Array.isArray(item[1]) ? [item[1][0]] : [item[1]]);
+          if (deepEqual(tes, tes2)){
+            kouho.push(item);
+          }
+        }
+      } catch(e){}
+    }
+
+    // build kouhok (those y[0] whose group is present in kouho)
+    const kouhok = [];
+    if (u && u.length > 0){
+      for (let y of u){
+        const group = y[0];
+        if (groupInKouho(group, kouho)) kouhok.push(group);
+      }
+    }
+
+    // select next d
+    if (kouhok.length > 0){
+      d = kouhok[Math.floor(Math.random()*kouhok.length)];
+    } else if (kouho.length > 0){
+      d = kouho[Math.floor(Math.random()*kouho.length)];
+    } else {
+      d = risuto2[Math.floor(Math.random()*risuto2.length)];
+    }
+
+    // output token: d[0][0] (if nested)
+    let outToken = '';
+    try {
+      if (Array.isArray(d[0]) && d[0].length > 0) outToken = d[0][0];
+      else if (isString(d[0])) outToken = d[0];
+      else outToken = String(d[0] || '');
+    } catch(e){ outToken = ''; }
+
+    // push to result (for Japanese concat, English space-joined later)
+    resultParts.push(outToken);
+
+    // incremental UI update callback
+    if (onProgress && ((a+1) % 10 === 0 || a+1 === total)){
+      try { onProgress(a+1, total, resultParts.slice()); } catch(e){}
+      // yield to browser to remain responsive
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+
+  // final onProgress if stopped early
+  if (onProgress) onProgress(Math.min(total, resultParts.length), total, resultParts.slice());
+
+  // join result
+  return (lang === 'en') ? resultParts.join(' ') : resultParts.join('');
+}
+
+/* ---------- UI wiring ---------- */
+const fileInput = document.getElementById('file_input');
+const runBtn = document.getElementById('run');
+const stopBtn = document.getElementById('stop');
+const resultDiv = document.getElementById('result');
+const progressDiv = document.getElementById('progress');
+const langSelect = document.getElementById('lang_mode');
+const genLenInput = document.getElementById('gen_len');
+const themeInput = document.getElementById('theme');
+
+stopBtn.addEventListener('click', ()=>{ STOP_REQUESTED = true; progressDiv.textContent = '停止要求送信済み…'; });
+
+runBtn.addEventListener('click', async ()=>{
+  const files = fileInput.files;
+  if (!files || files.length === 0){ alert('学習ファイルを選択してください'); return; }
+
+  const langMode = langSelect.value || 'ja';
+  const genLen = Math.max(1, parseInt(genLenInput.value || '800', 10));
+  const theme = themeInput.value || '';
+
+  progressDiv.textContent = '読み込み中…（大きなファイルは部分読み込み）';
+  resultDiv.textContent = '';
+
+  try {
+    // read files -> big text
+    const raw = await readFilesToText(files, { maxItemsPerFile: 20000, sampleRatio: 0.25, lang: langMode });
+
+    // tokenization: JP -> char array, EN -> word array
+    let tokens;
+    if (langMode === 'ja'){
+      tokens = Array.from(raw);
+    } else {
+      const norm = raw.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+      tokens = norm.length ? norm.split(' ') : [];
+    }
+
+    if (tokens.length < 10){
+      alert('トークンが少なすぎます。学習データを増やしてください。');
+      progressDiv.textContent = '準備完了（エラー）';
+      return;
+    }
+
+    progressDiv.textContent = 'risuto2 を構築中…';
+    // build risuto2 faithfully
+    const risuto2 = buildRisuto2(tokens, 2, 200000);
+
+    progressDiv.textContent = '生成中…（逐次出力）';
+    resultDiv.textContent = '';
+
+    // produce in small increments and append to output div to mimic real-time printing
+    await generateFaithfulJS(theme, risuto2, genLen, langMode, (done, total, partialParts) => {
+      // update progress and partial output
+      progressDiv.textContent = `生成中… ${done}/${total} (${Math.floor(done/total*100)}%)`;
+      // show partial output: for Japanese join without separator, English join with spaces
+      const partialText = (langMode === 'en') ? partialParts.join(' ') : partialParts.join('');
+      resultDiv.textContent = partialText;
+      // scroll to bottom if needed
+      resultDiv.scrollTop = resultDiv.scrollHeight;
     });
 
-    document.getElementById("progress").innerText = "生成完了！";
-    document.getElementById("result").innerText = out;
-
-    const matches = findMatchesFast(out, train_text, 10);
-    document.getElementById("match_result").innerText =
-        matches.length===0?"一致なし":matches.join("\n---\n");
-};
+    progressDiv.textContent = '生成完了！';
+  } catch(err) {
+    console.error(err);
+    progressDiv.textContent = 'エラーが発生しました（コンソールを確認）';
+    resultDiv.textContent = 'エラー: ' + String(err);
+  }
+});
 </script>
 </body>
 </html>
